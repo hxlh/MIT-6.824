@@ -28,8 +28,9 @@ type Coordinator struct {
 	mapTaskStatus    map[int]int
 	reduceTaskStatus map[int]int
 	//保存map处理后的中间文件路径,key为reduceid value为
-	mapFile map[int][]string
-	done    bool
+	mapFile        map[int][]string
+	done           bool
+	lastDistribute time.Time
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -94,12 +95,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.nextReduceId = 0
 	c.mapTaskStatus = make(map[int]int)
 	c.reduceTaskStatus = make(map[int]int)
-	for i := 0; i < len(files); i++ {
-		c.mapTaskStatus[i] = 0
-	}
-	for i := 0; i < nReduce; i++ {
-		c.reduceTaskStatus[i] = 0
-	}
 	fmt.Printf("input files %v\n", len(c.files))
 
 	c.server()
@@ -119,8 +114,8 @@ func (c *Coordinator) TaskCenterHandle(req *TaskArgs, reply *TaskReply) error {
 		c.mut.Lock()
 		defer c.mut.Unlock()
 		if req.Finished {
-			if c.mapTaskStatus[req.TaskId] != 1 {
-				fmt.Printf("map finished id %v\n",req.TaskId)
+			if _, ok := c.mapTaskStatus[req.TaskId]; !ok {
+				fmt.Printf("map finished id %v\n", req.TaskId)
 				c.nFinishedMapTask++
 				c.mapTaskStatus[req.TaskId] = 1
 				//将各文件路径按nReduce编码插入
@@ -141,8 +136,8 @@ func (c *Coordinator) TaskCenterHandle(req *TaskArgs, reply *TaskReply) error {
 		defer c.mut.Unlock()
 
 		if req.Finished {
-			if c.reduceTaskStatus[req.TaskId] != 1 {
-				fmt.Printf("reduce finished id %v\n",req.TaskId)
+			if _, ok := c.reduceTaskStatus[req.TaskId]; !ok {
+				fmt.Printf("reduce finished id %v\n", req.TaskId)
 				c.reduceTaskStatus[req.TaskId] = 1
 				c.nFinishedReduceTask++
 			}
@@ -170,19 +165,23 @@ func distributeTask(c *Coordinator, req *TaskArgs, reply *TaskReply) {
 			reply.TaskType = TASK_TYPE_MAP
 			fmt.Printf("distribute map task id %v\n", c.nextMapId)
 			c.nextMapId++
+			c.lastDistribute = time.Now()
 		} else {
 			//分配完但有部分map没有及时完成
 			//查找未完成部分
-			time.Sleep(time.Millisecond * 500)
-			for i := 0; i < len(c.mapTaskStatus); i++ {
-				if c.mapTaskStatus[i] == 0 {
-					reply.Filename = c.files[i]
-					reply.NReduce = c.nReduce
-					reply.TaskId = i
-					reply.TaskType = TASK_TYPE_MAP
-					fmt.Printf("distribute unfinished map task id %v\n", i)
-					break
+			// time.Sleep(time.Millisecond * 500)
+			if time.Since(c.lastDistribute).Milliseconds() > 4000 {
+				for i := 0; i < len(c.files); i++ {
+					if _, ok := c.mapTaskStatus[i]; !ok {
+						reply.Filename = c.files[i]
+						reply.NReduce = c.nReduce
+						reply.TaskId = i
+						reply.TaskType = TASK_TYPE_MAP
+						fmt.Printf("distribute unfinished map task id %v\n", i)
+						break
+					}
 				}
+				c.lastDistribute = time.Now()
 			}
 		}
 	} else if c.nFinishedReduceTask < c.nReduce {
@@ -194,20 +193,25 @@ func distributeTask(c *Coordinator, req *TaskArgs, reply *TaskReply) {
 			reply.TaskType = TASK_TYPE_REDUCE
 			fmt.Printf("distribute reduce task id %v\n", c.nextReduceId)
 			c.nextReduceId++
+			c.lastDistribute = time.Now()
 		} else {
 			//分配完但有部分reduce没有及时完成
 			//查找未完成部分
-			time.Sleep(time.Millisecond * 500)
-			for i := 0; i < len(c.reduceTaskStatus); i++ {
-				if c.reduceTaskStatus[i] == 0 {
-					reply.MapFile = c.mapFile[i]
-					reply.NReduce = c.nReduce
-					reply.TaskId = i
-					reply.TaskType = TASK_TYPE_REDUCE
-					fmt.Printf("distribute unfinished reduce task id %v\n", i)
-					break
+			// time.Sleep(time.Millisecond * 500)
+			if time.Since(c.lastDistribute).Milliseconds() > 4000 {
+				for i := 0; i < c.nReduce; i++ {
+					if _, ok := c.reduceTaskStatus[i]; !ok {
+						reply.MapFile = c.mapFile[i]
+						reply.NReduce = c.nReduce
+						reply.TaskId = i
+						reply.TaskType = TASK_TYPE_REDUCE
+						fmt.Printf("distribute unfinished reduce task id %v\n", i)
+						break
+					}
 				}
+				c.lastDistribute = time.Now()
 			}
+
 		}
 	} else {
 		//所有任务都完成

@@ -247,7 +247,6 @@ func task_reduce(reply *TaskReply, reducef func(string, []string) string) {
 	//删除文件夹所有内容
 	// defer os.RemoveAll(tmpPath)
 	// os.Mkdir(tmpPath, os.ModePerm)
-	os.Remove(filename)
 	// _, err := os.Stat(filename)
 	// if err == nil {
 	// 	panic(errors.New(fmt.Sprintf("file had create by other program\n")))
@@ -255,8 +254,9 @@ func task_reduce(reply *TaskReply, reducef func(string, []string) string) {
 
 	// ofile, err := os.Create(tmpPath + "/" + filename)
 	//检查是否一有人
+	tmpFileName:=strconv.FormatInt(time.Now().UnixNano(),10)
 
-	ofile, err := os.Create(filename)
+	ofile, err := os.Create(tmpFileName)
 
 	if err != nil {
 		// panic(errors.New(fmt.Sprintf("create file err\n")))
@@ -279,5 +279,5 @@ func task_reduce(reply *TaskReply, reducef func(string, []string) string) {
 		fmt.Fprintf(ofile, "%v %v\n", kvs[i].Key, output)
 		i = j
 	}
-	// os.Rename(ofile.Name(), filename)
+	os.Rename(ofile.Name(), filename)
 }
