@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+<<<<<<< HEAD
 	//	"bytes"
 
 	"log"
@@ -30,6 +31,17 @@ import (
 	"6.824/labrpc"
 )
 
+=======
+//	"bytes"
+	"sync"
+	"sync/atomic"
+
+//	"6.824/labgob"
+	"6.824/labrpc"
+)
+
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -53,6 +65,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+<<<<<<< HEAD
 type RaftStatus int
 
 const (
@@ -66,6 +79,8 @@ type LogEntry struct {
 	Command interface{}
 }
 
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // A Go object implementing a single Raft peer.
 //
@@ -80,6 +95,7 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+<<<<<<< HEAD
 	//(2A) code
 	role            RaftStatus
 	voteFor         int
@@ -95,6 +111,8 @@ type Raft struct {
 	applyCh         chan ApplyMsg
 	taskRunning     int32
 	//
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 }
 
 // return currentTerm and whether this server
@@ -104,6 +122,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+<<<<<<< HEAD
 	rf.mu.Lock()
 
 	if rf.role == Leader {
@@ -113,6 +132,8 @@ func (rf *Raft) GetState() (int, bool) {
 
 	rf.mu.Unlock()
 
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 	return term, isleader
 }
 
@@ -132,6 +153,10 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 }
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // restore previously persisted state.
 //
@@ -154,6 +179,10 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -174,12 +203,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+<<<<<<< HEAD
 
 	//(2A) code
 	Tern      int
@@ -188,6 +222,8 @@ type RequestVoteArgs struct {
 
 	//(2B) code
 	LastCommitIndex int
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 }
 
 //
@@ -196,6 +232,7 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+<<<<<<< HEAD
 
 	//(2A) code
 	VoteFor   int
@@ -303,6 +340,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.LastCommitIndex = rf.lastCommitIndex
 	reply.Leader = rf.voteFor
 	reply.CurTerm = rf.term
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 }
 
 //
@@ -310,6 +349,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+<<<<<<< HEAD
 
 	//(2A) code
 	//只有follower可以投票,任期比现在高才接接受选举
@@ -337,6 +377,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteFor = rf.voteFor
 	reply.LastCommitIndex = rf.lastCommitIndex
 	//
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 }
 
 //
@@ -373,6 +415,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -393,6 +439,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+<<<<<<< HEAD
 	//(2B) code
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -414,6 +461,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	log.Printf("Leader %v had logs %v\n",rf.me,rf.logs)
 
 	rf.nextIndex++
+=======
+
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 
 	return index, term, isLeader
 }
@@ -448,6 +498,7 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 
+<<<<<<< HEAD
 		//(2A) code
 		// leader: 发送心跳包
 		// follower: 休眠150-300毫秒，超时后检查是否应该成为候选人
@@ -697,6 +748,8 @@ func (rf *Raft) ticker() {
 			}
 		}
 
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 	}
 }
 
@@ -720,6 +773,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 
+<<<<<<< HEAD
 	//(2A) code
 	rand.Seed(time.Now().UnixNano())
 	rf.role = Follower
@@ -738,12 +792,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.taskRunning = 0
 
+=======
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+<<<<<<< HEAD
 	return rf
 }
 
@@ -793,4 +850,8 @@ func sendRequestVoteToPeers(rf *Raft, peer int) bool {
 	}
 
 	return success
+=======
+
+	return rf
+>>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 }
