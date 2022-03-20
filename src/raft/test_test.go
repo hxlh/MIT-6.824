@@ -8,7 +8,6 @@ package raft
 // test with the original before submitting.
 //
 
-<<<<<<< HEAD
 import (
 	"fmt"
 	"math/rand"
@@ -17,14 +16,6 @@ import (
 	"testing"
 	"time"
 )
-=======
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
->>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -61,10 +52,7 @@ func TestInitialElection2A(t *testing.T) {
 	cfg.end()
 }
 
-<<<<<<< HEAD
 //有时间限制	5s,需要进行重试
-=======
->>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 func TestReElection2A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -100,10 +88,6 @@ func TestReElection2A(t *testing.T) {
 
 	cfg.end()
 }
-<<<<<<< HEAD
-=======
-
->>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 func TestManyElections2A(t *testing.T) {
 	servers := 7
 	cfg := make_config(t, servers, false, false)
@@ -137,10 +121,7 @@ func TestManyElections2A(t *testing.T) {
 	cfg.end()
 }
 
-<<<<<<< HEAD
 //注: 论文中index从1开始
-=======
->>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -164,10 +145,7 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
-<<<<<<< HEAD
 //该test是测试rpc发送的数据是否过大
-=======
->>>>>>> 114493f1cf3e82193426561607ab4488c8499123
 //
 // check, based on counting bytes of RPCs, that
 // each command is sent to each peer just once.
