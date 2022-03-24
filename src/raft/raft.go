@@ -257,9 +257,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		rf.convertToFollower(args.Term)
-	}
+	}   
 
-	if rf.votedFor < 0 || rf.votedFor == args.CandidateId {
+	//2B 选举限制
+	if (rf.votedFor < 0 || rf.votedFor == args.CandidateId) && (len(rf.log)==0 || 
+	(args.LastLogTerm==rf.log[len(rf.log)-1].Term && args.LastLogIndex>=len(rf.log))){
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 
@@ -328,6 +330,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.role != int(Leader) {
+		isLeader = false
+		return index, term, isLeader
+	}
+
+	rf.log = append(rf.log, LogEntry{
+		Command: command,
+		Term:    rf.currentTerm,
+	})
+
+	term = rf.currentTerm
+	index = rf.nextIndex[rf.me]
+
+	rf.nextIndex[rf.me] = len(rf.log) + 1
+	rf.matchIndex[rf.me] = len(rf.log)
 
 	return index, term, isLeader
 }
@@ -438,13 +458,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = int(Follower)
 	rf.lastTime = time.Now()
 	rf.electionTimeout = GenElectionTimeout()
+	rf.nextIndex=make([]int, len(peers))
+	rf.matchIndex=make([]int, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
@@ -467,11 +488,18 @@ func (rf *Raft) execLeaderVote() {
 		go func(peer int) {
 			defer wg.Done()
 			rf.mu.Lock()
+
+			lastLogIndex:=len(rf.log)
+			lastLogTerm:=-1
+			if lastLogIndex>0 {
+				lastLogTerm=rf.log[lastLogIndex-1].Term
+			}
+
 			args := &RequestVoteArgs{
 				Term:         rf.currentTerm,
 				CandidateId:  rf.me,
-				LastLogIndex: 0,
-				LastLogTerm:  0,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			reply := &RequestVoteReply{}
 			rf.mu.Unlock()
@@ -500,7 +528,7 @@ func (rf *Raft) execLeaderVote() {
 
 	if rf.role == int(Candidate) {
 		if votesWin(votes, len(rf.peers)) {
-			rf.role = int(Leader)
+			rf.convertToLeader()
 			log.Printf("raft %v win become the leader\n", rf.me)
 		}
 	}
@@ -542,19 +570,6 @@ func (rf *Raft) execHeartBeats() {
 	}
 }
 
-/**
-If RPC request or response contains term T > currentTerm:
-set currentTerm = T, convert to follower (§5.1)
-*/
-func rule2Check(rf *Raft, respTerm int, curTrem int) {
-	if respTerm > curTrem {
-		rf.currentTerm = respTerm
-		rf.role = int(Follower)
-		rf.votedFor = -1
-		rf.lastTime = time.Now()
-	}
-}
-
 func votesWin(votes int, total int) bool {
 	if votes > (total / 2) {
 		return true
@@ -567,4 +582,12 @@ func (rf *Raft) convertToFollower(T int) {
 	rf.role = int(Follower)
 	rf.lastTime = time.Now()
 	rf.votedFor = -1
+}
+
+func (rf *Raft) convertToLeader() {
+	rf.role = int(Leader)
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = len(rf.log) + 1
+		rf.matchIndex[i] = 0
+	}
 }
