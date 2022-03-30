@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	"log"
+
 	"math/rand"
 	"sort"
 	"sync"
@@ -193,10 +193,12 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term        int
-	Success     bool
-	ExpectTerm  int
-	ExpectIndex int
+	Term    int
+	Success bool
+	//fast backup
+	XTerm  int
+	XIndex int
+	XLen   int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -222,12 +224,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// whose term matches prevLogTerm (§5.3)
 	if args.PrevLogIndex > len(rf.log) || (args.PrevLogIndex > 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex-1].Term) {
 		reply.Success = false
-		reply.ExpectIndex = len(rf.log)
-		if args.PrevLogIndex > len(rf.log) {
-			reply.ExpectTerm = rf.log[len(rf.log)-1].Term
-		} else {
 
-			reply.ExpectTerm = rf.log[args.PrevLogIndex-1].Term
+		//fast backup
+		reply.XTerm = -1
+		//冲突
+		if args.PrevLogIndex > 0 && args.PrevLogIndex <= len(rf.log) {
+			//找到冲突的Term，便于快速定位
+			reply.XTerm = rf.log[args.PrevLogIndex-1].Term
+			//查找对应任期号为XTerm的第一条Log条目的槽位号
+			for i := args.PrevLogIndex; i >= 1; i-- {
+				if rf.log[i-1].Term == reply.XTerm {
+					reply.XIndex = i
+				} else {
+					break
+				}
+			}
+		}
+		//follower缺失log而不是冲突
+		if reply.XTerm == -1 {
+			reply.XLen = args.PrevLogIndex - len(rf.log)
 		}
 		return
 	}
@@ -240,7 +255,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.log = append(rf.log, args.Entries...)
 
-		// log.Printf("raft %v log %v\n", rf.me, rf.log)
+		// DPrintf("raft %v log %v\n", rf.me, rf.log)
 
 	}
 
@@ -270,7 +285,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 
 			// rf.mu.Lock()
-			// log.Printf("raft %v log %v\n", rf.me, rf.log)
+			// DPrintf("raft %v log %v\n", rf.me, rf.log)
 			// rf.mu.Unlock()
 		}()
 
@@ -312,7 +327,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// log.Printf("raft %v want raft %v vote to it\n", args.CandidateId, rf.me)
+	// DPrintf("raft %v want raft %v vote to it\n", args.CandidateId, rf.me)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -330,7 +345,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		(args.LastLogTerm > rf.log[len(rf.log)-1].Term) ||
 		(args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= len(rf.log))) {
 
-		log.Printf("raft %v vote to %v\n", rf.me, args.CandidateId)
+		DPrintf("raft %v vote to %v\n", rf.me, args.CandidateId)
 		rf.lastTime = time.Now()
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
@@ -411,7 +426,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    rf.currentTerm,
 	})
 
-	// log.Printf("raft %v recv log %v\n", rf.me, rf.log)
+	// DPrintf("raft %v recv log %v\n", rf.me, rf.log)
 
 	term = rf.currentTerm
 	index = rf.nextIndex[rf.me]
@@ -480,7 +495,7 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			//重置选举计时器
 			rf.lastTime = time.Now()
-			rf.electionTimeout=GenElectionTimeout()
+			rf.electionTimeout = GenElectionTimeout()
 			rf.mu.Unlock()
 			//向所有其他服务器发送 RequestVote RPC
 			go rf.execLeaderVote()
@@ -530,7 +545,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = int(Follower)
 	rf.lastTime = time.Now()
 	rf.electionTimeout = GenElectionTimeout()
-	log.Printf("raft %v electionTimeout %v\n", rf.me, rf.electionTimeout)
+	DPrintf("raft %v electionTimeout %v\n", rf.me, rf.electionTimeout)
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
@@ -585,11 +600,11 @@ func (rf *Raft) execLeaderVote() {
 					votes++
 					//提前，防止超时变为Follower
 					if rf.role == int(Candidate) {
-						log.Printf("raft %v got votes %v\n", rf.me, votes)
+						DPrintf("raft %v got votes %v\n", rf.me, votes)
 						if votesWin(votes, len(rf.peers)) {
 							rf.convertToLeader()
 							// go rf.execHeartBeats()
-							log.Printf("raft %v win become the leader\n", rf.me)
+							DPrintf("raft %v win become the leader\n", rf.me)
 						}
 					}
 				}
@@ -604,11 +619,11 @@ func (rf *Raft) execLeaderVote() {
 	rf.mu.Lock()
 
 	if rf.role == int(Candidate) {
-		log.Printf("raft %v got votes %v\n", rf.me, votes)
+		DPrintf("raft %v got votes %v\n", rf.me, votes)
 		if votesWin(votes, len(rf.peers)) {
 			rf.convertToLeader()
 			// go rf.execHeartBeats()
-			log.Printf("raft %v win become the leader\n", rf.me)
+			DPrintf("raft %v win become the leader\n", rf.me)
 		}
 	}
 	rf.mu.Unlock()
@@ -696,7 +711,7 @@ func (rf *Raft) execHeartBeats() {
 										rf.mu.Unlock()
 									}
 									// rf.mu.Lock()
-									// log.Printf("Leader %v log %v\n", rf.me, rf.log)
+									// DPrintf("Leader %v log %v\n", rf.me, rf.log)
 									// rf.mu.Unlock()
 								}()
 							}
@@ -706,14 +721,24 @@ func (rf *Raft) execHeartBeats() {
 						//需要快速回退
 						//一致性检查失败,nextIndex回退,因rpc可能会重发不可用递减回退
 						rf.nextIndex[peer] = prevLogIndex
-						if args.PrevLogIndex > reply.ExpectIndex {
-							rf.nextIndex[peer] = reply.ExpectIndex + 1
+
+						if reply.XTerm == -1 {
+							rf.nextIndex[peer] = args.PrevLogIndex + 1 - reply.XLen
 						} else {
-							for rf.nextIndex[peer] > 1 {
-								rf.nextIndex[peer]--
+							/*
+								Leader发现自己其实有任期XTerm的日志，它会将自己本地记录的Follower的nextIndex设置到本地在XTerm位置的Log条目后面，
+								下一次Leader发出下一条AppendEntries时，就可以一次覆盖Follower中槽位2和槽位3对应的Log。
+							*/
+							for i := rf.nextIndex[peer] - 1; i >= reply.XIndex; i-- {
+								if rf.log[i-1].Term != reply.XTerm {
+									rf.nextIndex[peer]--
+								} else {
+									break
+								}
 							}
 						}
-						log.Printf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
+
+						DPrintf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
 					}
 				}
 
@@ -735,7 +760,7 @@ func (rf *Raft) convertToFollower(T int) {
 	rf.role = int(Follower)
 	rf.lastTime = time.Now()
 	rf.votedFor = -1
-	log.Printf("raft %v change to follower\n", rf.me)
+	DPrintf("raft %v change to follower\n", rf.me)
 }
 
 func (rf *Raft) convertToLeader() {
