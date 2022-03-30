@@ -17,6 +17,12 @@ import (
 	"time"
 )
 
+/*INFO Split Vote决定了能否在规定时间内选出Leader
+这里还有一个小点需要注意，每一次一个节点重置自己的选举定时器时，
+都需要重新选择一个随机的超时时间。也就是说，不要在服务器启动的时候选择一个随机的超时时间，
+然后反复使用同一个值。因为如果你不够幸运的话，两个服务器会以极小的概率选择相同的随机超时时间，
+那么你会永远处于分割选票的场景中。所以你需要每次都为选举定时器选择一个不同的随机超时时间。
+*/
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
