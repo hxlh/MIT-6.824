@@ -213,14 +213,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//更新选举计时器
-	rf.lastTime = time.Now()
-
-	if args.Term > rf.currentTerm{
+	if args.Term > rf.currentTerm {
 		rf.convertToFollower(args.Term)
 	}
 
-	//TODO 处理一致性检查
+	//INFO 处理一致性检查
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
 	if args.PrevLogIndex > len(rf.log) || (args.PrevLogIndex > 0 && args.PrevLogTerm != rf.log[args.PrevLogIndex-1].Term) {
@@ -279,6 +276,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	}
 
+	//更新选举计时器
+	rf.lastTime = time.Now()
 	reply.Success = true
 	return
 }
@@ -313,7 +312,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	log.Printf("raft %v want raft %v vote to it\n", args.CandidateId, rf.me)
+	// log.Printf("raft %v want raft %v vote to it\n", args.CandidateId, rf.me)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -324,10 +323,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollower(args.Term)
 	}
 
-	//2B 选举限制Raft 通过比较两份日志中最后一条日志条目的索引值和任期号定义谁的日志比较新。
+	//TIP 2B 选举限制Raft 通过比较两份日志中最后一条日志条目的索引值和任期号定义谁的日志比较新。
 	//如果两份日志最后的条目的任期号不同，那么任期号大的日志更加新。
 	//如果两份日志最后的条目任期号相同，那么日志比较长的那个就更加新。
-	//TODO wait to fix dont pass TestRejoin2B
 	if (rf.votedFor < 0 || rf.votedFor == args.CandidateId) && (len(rf.log) == 0 ||
 		(args.LastLogTerm > rf.log[len(rf.log)-1].Term) ||
 		(args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= len(rf.log))) {
@@ -482,6 +480,7 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			//重置选举计时器
 			rf.lastTime = time.Now()
+			rf.electionTimeout=GenElectionTimeout()
 			rf.mu.Unlock()
 			//向所有其他服务器发送 RequestVote RPC
 			go rf.execLeaderVote()
@@ -586,6 +585,7 @@ func (rf *Raft) execLeaderVote() {
 					votes++
 					//提前，防止超时变为Follower
 					if rf.role == int(Candidate) {
+						log.Printf("raft %v got votes %v\n", rf.me, votes)
 						if votesWin(votes, len(rf.peers)) {
 							rf.convertToLeader()
 							// go rf.execHeartBeats()
@@ -604,6 +604,7 @@ func (rf *Raft) execLeaderVote() {
 	rf.mu.Lock()
 
 	if rf.role == int(Candidate) {
+		log.Printf("raft %v got votes %v\n", rf.me, votes)
 		if votesWin(votes, len(rf.peers)) {
 			rf.convertToLeader()
 			// go rf.execHeartBeats()
