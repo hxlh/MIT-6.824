@@ -247,16 +247,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//append entries从prevlogIndex开始
-	if args.PrevLogIndex != -1 {
-		if args.PrevLogIndex < len(rf.log) {
-			//删除不一致的日志
-			rf.log = rf.log[:args.PrevLogIndex]
-		}
+	//TODOIf an existing entry conflicts with a new one (same index
+	// but different terms), delete the existing entry and all that
+	// follow it (§5.3)
+	if len(args.Entries)>0 {
+		rf.log=rf.log[:args.PrevLogIndex]
 		rf.log = append(rf.log, args.Entries...)
-
-		// DPrintf("raft %v log %v\n", rf.me, rf.log)
-
 	}
 
 	//deal with commit
@@ -501,7 +497,7 @@ func (rf *Raft) ticker() {
 			go rf.execLeaderVote()
 		}
 
-		if time.Since(lastHeartBeat).Milliseconds() > 130 {
+		if time.Since(lastHeartBeat).Milliseconds() > 100 {
 			rf.mu.Lock()
 			role := rf.role
 			rf.mu.Unlock()
@@ -561,16 +557,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) execLeaderVote() {
 	votes := 1
 
-	wg := &sync.WaitGroup{}
-
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		wg.Add(1)
 
 		go func(peer int) {
-			defer wg.Done()
 			rf.mu.Lock()
 
 			lastLogIndex := len(rf.log)
@@ -591,6 +583,10 @@ func (rf *Raft) execLeaderVote() {
 			if ok {
 
 				rf.mu.Lock()
+				if args.Term != rf.currentTerm || rf.role != int(Candidate) {
+					rf.mu.Unlock()
+					return
+				}
 
 				if reply.Term > rf.currentTerm {
 					rf.convertToFollower(reply.Term)
@@ -613,20 +609,6 @@ func (rf *Raft) execLeaderVote() {
 			}
 		}(i)
 	}
-
-	wg.Wait()
-
-	rf.mu.Lock()
-
-	if rf.role == int(Candidate) {
-		DPrintf("raft %v got votes %v\n", rf.me, votes)
-		if votesWin(votes, len(rf.peers)) {
-			rf.convertToLeader()
-			// go rf.execHeartBeats()
-			DPrintf("raft %v win become the leader\n", rf.me)
-		}
-	}
-	rf.mu.Unlock()
 }
 
 //TODO 日志复制(AppendEntries) Last Change: 2022年3月27日16:15:32
@@ -665,6 +647,11 @@ func (rf *Raft) execHeartBeats() {
 			ok := rf.sendAppendEntries(peer, args, reply)
 			if ok {
 				rf.mu.Lock()
+
+				if args.Term != rf.currentTerm || rf.role != int(Leader) {
+					rf.mu.Unlock()
+					return
+				}
 
 				if reply.Term > rf.currentTerm {
 					rf.convertToFollower(reply.Term)
