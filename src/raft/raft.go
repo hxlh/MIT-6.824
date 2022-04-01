@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sort"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -139,6 +141,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -161,6 +171,20 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		panic("readPersist err")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 //
@@ -250,9 +274,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//TODOIf an existing entry conflicts with a new one (same index
 	// but different terms), delete the existing entry and all that
 	// follow it (§5.3)
-	if len(args.Entries)>0 {
-		rf.log=rf.log[:args.PrevLogIndex]
+	if len(args.Entries) > 0 {
+		rf.log = rf.log[:args.PrevLogIndex]
 		rf.log = append(rf.log, args.Entries...)
+		rf.persist()
 	}
 
 	//deal with commit
@@ -267,8 +292,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.mu.Lock()
 			entries := rf.log
 			commitIndex := rf.commitIndex
+			lastApplied := rf.lastApplied
 			rf.mu.Unlock()
-			for i := rf.lastApplied + 1; i <= commitIndex; i++ {
+			for i := lastApplied + 1; i <= commitIndex; i++ {
+
 				msg := ApplyMsg{
 					CommandValid: true,
 					CommandIndex: i,
@@ -346,6 +373,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 
+		rf.persist()
 	}
 
 	reply.Term = rf.currentTerm
@@ -421,6 +449,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 		Term:    rf.currentTerm,
 	})
+	rf.persist()
 
 	// DPrintf("raft %v recv log %v\n", rf.me, rf.log)
 
@@ -455,7 +484,7 @@ func (rf *Raft) killed() bool {
 }
 
 func GenElectionTimeout() int {
-	return rand.Intn(150) + 150
+	return rand.Intn(200) + 200
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -492,6 +521,8 @@ func (rf *Raft) ticker() {
 			//重置选举计时器
 			rf.lastTime = time.Now()
 			rf.electionTimeout = GenElectionTimeout()
+
+			rf.persist()
 			rf.mu.Unlock()
 			//向所有其他服务器发送 RequestVote RPC
 			go rf.execLeaderVote()
@@ -532,6 +563,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	//mycode
 	rf.applyCh = applyCh
+	rf.persister = persister
 
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -748,6 +780,8 @@ func (rf *Raft) convertToFollower(T int) {
 	rf.lastTime = time.Now()
 	rf.votedFor = -1
 	DPrintf("raft %v change to follower\n", rf.me)
+
+	rf.persist()
 }
 
 func (rf *Raft) convertToLeader() {
