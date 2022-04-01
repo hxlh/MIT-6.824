@@ -274,11 +274,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//TODOIf an existing entry conflicts with a new one (same index
 	// but different terms), delete the existing entry and all that
 	// follow it (§5.3)
-	if len(args.Entries) > 0 {
-		rf.log = rf.log[:args.PrevLogIndex]
-		rf.log = append(rf.log, args.Entries...)
-		rf.persist()
+	//TIP 一致性检查通过后只有存在冲突才进行日志替换
+
+	{
+		conflictIndex := -1
+		i := 0
+		for ; i < len(args.Entries); i++ {
+			nowIndex := args.PrevLogIndex + i + 1
+			//存在冲突
+			if nowIndex > len(rf.log) || rf.log[nowIndex-1].Term != args.Entries[i].Term {
+				conflictIndex = nowIndex - 1
+				break
+			}
+		}
+
+		if conflictIndex != -1 {
+			rf.log = rf.log[:conflictIndex]
+			rf.log = append(rf.log, args.Entries[i:]...)
+			rf.persist()
+		}
 	}
+
+	// rf.log = rf.log[:args.PrevLogIndex]
+	// rf.log = append(rf.log, args.Entries...)
 
 	//deal with commit
 	if args.LeaderCommit > rf.commitIndex {
@@ -293,9 +311,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			entries := rf.log
 			commitIndex := rf.commitIndex
 			lastApplied := rf.lastApplied
+			// currTerm:=rf.currentTerm
 			rf.mu.Unlock()
 			for i := lastApplied + 1; i <= commitIndex; i++ {
-
+				// if entries[i-1].Term!=currTerm {
+				// 	continue
+				// }
 				msg := ApplyMsg{
 					CommandValid: true,
 					CommandIndex: i,
@@ -525,10 +546,10 @@ func (rf *Raft) ticker() {
 			rf.persist()
 			rf.mu.Unlock()
 			//向所有其他服务器发送 RequestVote RPC
-			go rf.execLeaderVote()
+			rf.execLeaderVote()
 		}
 
-		if time.Since(lastHeartBeat).Milliseconds() > 100 {
+		if time.Since(lastHeartBeat).Milliseconds() > 130 {
 			rf.mu.Lock()
 			role := rf.role
 			rf.mu.Unlock()
@@ -699,8 +720,8 @@ func (rf *Raft) execHeartBeats() {
 						// If there exists an N such that N > commitIndex, a majority
 						// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 						// set commitIndex = N (§5.3, §5.4).
-						rf.nextIndex[peer] = args.PrevLogIndex + len(entries) + 1
-						rf.matchIndex[peer] = args.PrevLogIndex + len(entries)
+						rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+						rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
 
 						matchIndexs := make([]int, len(rf.peers))
 						copy(matchIndexs, rf.matchIndex)
@@ -729,9 +750,7 @@ func (rf *Raft) execHeartBeats() {
 										rf.lastApplied = i
 										rf.mu.Unlock()
 									}
-									// rf.mu.Lock()
-									// DPrintf("Leader %v log %v\n", rf.me, rf.log)
-									// rf.mu.Unlock()
+
 								}()
 							}
 						}

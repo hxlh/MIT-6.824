@@ -126,7 +126,7 @@ func TestManyElections2A(t *testing.T) {
 
 	cfg.end()
 }
-
+//130 beats election 200+200 1000 Passed
 //注: 论文中index从1开始
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
@@ -151,6 +151,7 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 //该test是测试rpc发送的数据是否过大
 //
 // check, based on counting bytes of RPCs, that
@@ -186,7 +187,7 @@ func TestRPCBytes2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//130 beats election 200+200 1000/1000; 999 ok, 1 failed failed to reach agreement
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -220,7 +221,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -271,7 +272,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestConcurrentStarts2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -373,6 +374,7 @@ loop:
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 974 ok, 26 failed failed failed to reach agreement
 func TestRejoin2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
