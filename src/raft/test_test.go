@@ -126,6 +126,7 @@ func TestManyElections2A(t *testing.T) {
 
 	cfg.end()
 }
+
 //130 beats election 200+200 1000 Passed
 //注: 论文中index从1开始
 func TestBasicAgree2B(t *testing.T) {
@@ -187,6 +188,7 @@ func TestRPCBytes2B(t *testing.T) {
 
 	cfg.end()
 }
+
 //130 beats election 200+200 1000/1000; 999 ok, 1 failed failed to reach agreement
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
@@ -221,6 +223,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	cfg.end()
 }
+
 //130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
@@ -272,6 +275,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	cfg.end()
 }
+
 //130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestConcurrentStarts2B(t *testing.T) {
 	servers := 3
