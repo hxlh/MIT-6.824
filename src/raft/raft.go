@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sort"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -139,6 +141,14 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -161,6 +171,20 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		panic("readPersist err")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 //
@@ -247,16 +271,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	//append entries从prevlogIndex开始
-	if args.PrevLogIndex != -1 {
-		if args.PrevLogIndex < len(rf.log) {
-			//删除不一致的日志
-			rf.log = rf.log[:args.PrevLogIndex]
-		}
+	//TODOIf an existing entry conflicts with a new one (same index
+	// but different terms), delete the existing entry and all that
+	// follow it (§5.3)
+	if len(args.Entries) > 0 {
+		rf.log = rf.log[:args.PrevLogIndex]
 		rf.log = append(rf.log, args.Entries...)
-
-		// DPrintf("raft %v log %v\n", rf.me, rf.log)
-
+		rf.persist()
 	}
 
 	//deal with commit
@@ -271,8 +292,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.mu.Lock()
 			entries := rf.log
 			commitIndex := rf.commitIndex
+			lastApplied := rf.lastApplied
 			rf.mu.Unlock()
-			for i := rf.lastApplied + 1; i <= commitIndex; i++ {
+			for i := lastApplied + 1; i <= commitIndex; i++ {
+
 				msg := ApplyMsg{
 					CommandValid: true,
 					CommandIndex: i,
@@ -350,6 +373,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 
+		rf.persist()
 	}
 
 	reply.Term = rf.currentTerm
@@ -425,6 +449,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 		Term:    rf.currentTerm,
 	})
+	rf.persist()
 
 	// DPrintf("raft %v recv log %v\n", rf.me, rf.log)
 
@@ -459,7 +484,7 @@ func (rf *Raft) killed() bool {
 }
 
 func GenElectionTimeout() int {
-	return rand.Intn(150) + 150
+	return rand.Intn(200) + 200
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -496,12 +521,14 @@ func (rf *Raft) ticker() {
 			//重置选举计时器
 			rf.lastTime = time.Now()
 			rf.electionTimeout = GenElectionTimeout()
+
+			rf.persist()
 			rf.mu.Unlock()
 			//向所有其他服务器发送 RequestVote RPC
 			go rf.execLeaderVote()
 		}
 
-		if time.Since(lastHeartBeat).Milliseconds() > 130 {
+		if time.Since(lastHeartBeat).Milliseconds() > 100 {
 			rf.mu.Lock()
 			role := rf.role
 			rf.mu.Unlock()
@@ -536,6 +563,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	//mycode
 	rf.applyCh = applyCh
+	rf.persister = persister
 
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -561,16 +589,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) execLeaderVote() {
 	votes := 1
 
-	wg := &sync.WaitGroup{}
-
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		wg.Add(1)
 
 		go func(peer int) {
-			defer wg.Done()
 			rf.mu.Lock()
 
 			lastLogIndex := len(rf.log)
@@ -591,6 +615,10 @@ func (rf *Raft) execLeaderVote() {
 			if ok {
 
 				rf.mu.Lock()
+				if args.Term != rf.currentTerm || rf.role != int(Candidate) {
+					rf.mu.Unlock()
+					return
+				}
 
 				if reply.Term > rf.currentTerm {
 					rf.convertToFollower(reply.Term)
@@ -613,20 +641,6 @@ func (rf *Raft) execLeaderVote() {
 			}
 		}(i)
 	}
-
-	wg.Wait()
-
-	rf.mu.Lock()
-
-	if rf.role == int(Candidate) {
-		DPrintf("raft %v got votes %v\n", rf.me, votes)
-		if votesWin(votes, len(rf.peers)) {
-			rf.convertToLeader()
-			// go rf.execHeartBeats()
-			DPrintf("raft %v win become the leader\n", rf.me)
-		}
-	}
-	rf.mu.Unlock()
 }
 
 //TODO 日志复制(AppendEntries) Last Change: 2022年3月27日16:15:32
@@ -665,6 +679,11 @@ func (rf *Raft) execHeartBeats() {
 			ok := rf.sendAppendEntries(peer, args, reply)
 			if ok {
 				rf.mu.Lock()
+
+				if args.Term != rf.currentTerm || rf.role != int(Leader) {
+					rf.mu.Unlock()
+					return
+				}
 
 				if reply.Term > rf.currentTerm {
 					rf.convertToFollower(reply.Term)
@@ -761,6 +780,8 @@ func (rf *Raft) convertToFollower(T int) {
 	rf.lastTime = time.Now()
 	rf.votedFor = -1
 	DPrintf("raft %v change to follower\n", rf.me)
+
+	rf.persist()
 }
 
 func (rf *Raft) convertToLeader() {
