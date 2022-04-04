@@ -523,7 +523,7 @@ func (rf *Raft) killed() bool {
 }
 
 func GenElectionTimeout() int {
-	return rand.Intn(200) + 200
+	return rand.Intn(150) + 150
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -628,14 +628,13 @@ func (rf *Raft) execLeaderVote() {
 	votes := 1
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	currentTerm := rf.currentTerm
 	lastLogIndex := len(rf.log)
 	lastLogTerm := -1
 	if lastLogIndex > 0 {
 		lastLogTerm = rf.log[lastLogIndex-1].Term
 	}
+	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -691,8 +690,6 @@ func (rf *Raft) execLeaderVote() {
 //TODO 日志复制(AppendEntries) Last Change: 2022年3月27日16:15:32
 func (rf *Raft) execHeartBeats() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	/*TIP 关于一个导致Apply error出现的问题
 	currentTerm必须使用固定值进行rpc，否则在发送一次心跳rpc过程会有不同任期的rpc被发送到其他Peers
 	不同的任期会导致AppendEntries处理出错
@@ -705,6 +702,7 @@ func (rf *Raft) execHeartBeats() {
 
 	currentTerm := rf.currentTerm
 	commitIndex := rf.commitIndex
+	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
