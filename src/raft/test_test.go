@@ -127,6 +127,7 @@ func TestManyElections2A(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000 Passed
 //注: 论文中index从1开始
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
@@ -151,6 +152,7 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 //该test是测试rpc发送的数据是否过大
 //
 // check, based on counting bytes of RPCs, that
@@ -187,6 +189,7 @@ func TestRPCBytes2B(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 999 ok, 1 failed failed to reach agreement
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -221,6 +224,7 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -272,6 +276,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 1000 ok, 0 failed
 func TestConcurrentStarts2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -373,6 +378,7 @@ loop:
 	cfg.end()
 }
 
+//130 beats election 200+200 1000/1000; 974 ok, 26 failed failed failed to reach agreement
 func TestRejoin2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -410,7 +416,7 @@ func TestRejoin2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 250+150 100/100; 93 ok, 7 failed
 func TestBackup2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -482,7 +488,7 @@ func TestBackup2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 250+150 100/100; 100 ok, 0 failed
 func TestCount2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -592,7 +598,7 @@ loop:
 
 	cfg.end()
 }
-
+//100 beats election 250+150 (base+rand(150)) 100/100; 100 ok, 0 failed
 func TestPersist12C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -638,7 +644,7 @@ func TestPersist12C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 func TestPersist22C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -684,7 +690,7 @@ func TestPersist22C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 func TestPersist32C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -715,6 +721,8 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
+//添加了快速回退，即当Leader收到需要回退的reply后对该peer立即发送appendEntries请求
+//100 beats election 150~450 (base+rand(300)) 100/100; 100 ok, 0 failed
 //
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
@@ -780,7 +788,7 @@ func TestFigure82C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150~450 100/100; 100 ok, 0 failed
 func TestUnreliableAgree2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
@@ -810,6 +818,21 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
+//50 beats vote retry 60 election 150~450  100/100; 97 ok, 3 failed 
+//50 beats vote retry 100 election 300~600  100/100; 100 ok, 0 failed
+//添加PreVote机制后
+//100 beats election 300~500 100/100; 100 ok, 0 failed
+//100 beats election 200~400 100/100; 100 ok, 0 failed
+/*
+出现随机的"failed to reach agreement"在TestFigure8Unreliable2C scenario里，也就是说10s内没有达到一个值的agreement，随机出现
+
+出现原因：由于没有preVote问题，rejoin的node具有更大的term，它就会打扰到leader，触发leader->follower，造成整个集群没有leader，也就无法reach agreement。
+
+解决方式：加入preVote，即StatePreCandidate状态。它的核心是：
+每次electionTimeout后，它的term不会加1，而preVoteRequest里的term是加1的。
+接收方判断请求是preVoteRequest，也不会将自身term进行赋值，只会进行term check和election restriction check。
+待得到majority后，become candidate再进行voteRequest，如果candidate刚好未got majority，则又会降为follower，重新开始preVote。
+*/
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
