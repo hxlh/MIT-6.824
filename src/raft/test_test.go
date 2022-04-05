@@ -722,7 +722,7 @@ func TestPersist32C(t *testing.T) {
 }
 
 //添加了快速回退，即当Leader收到需要回退的reply后对该peer立即发送appendEntries请求
-//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
+//100 beats election 150~450 (base+rand(300)) 100/100; 100 ok, 0 failed
 //
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
@@ -788,7 +788,7 @@ func TestFigure82C(t *testing.T) {
 
 	cfg.end()
 }
-//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
+//100 beats election 150~450 100/100; 100 ok, 0 failed
 func TestUnreliableAgree2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
@@ -818,7 +818,21 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
-//理论上应该添加重复投票
+//50 beats vote retry 60 election 150~450  100/100; 97 ok, 3 failed 
+//50 beats vote retry 100 election 300~600  100/100; 100 ok, 0 failed
+//添加PreVote机制后
+//100 beats election 300~500 100/100; 100 ok, 0 failed
+//100 beats election 200~400 100/100; 100 ok, 0 failed
+/*
+出现随机的"failed to reach agreement"在TestFigure8Unreliable2C scenario里，也就是说10s内没有达到一个值的agreement，随机出现
+
+出现原因：由于没有preVote问题，rejoin的node具有更大的term，它就会打扰到leader，触发leader->follower，造成整个集群没有leader，也就无法reach agreement。
+
+解决方式：加入preVote，即StatePreCandidate状态。它的核心是：
+每次electionTimeout后，它的term不会加1，而preVoteRequest里的term是加1的。
+接收方判断请求是preVoteRequest，也不会将自身term进行赋值，只会进行term check和election restriction check。
+待得到majority后，become candidate再进行voteRequest，如果candidate刚好未got majority，则又会降为follower，重新开始preVote。
+*/
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)

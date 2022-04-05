@@ -66,6 +66,7 @@ const (
 	Follower Role = iota
 	Candidate
 	Leader
+	PreCandidate
 )
 
 //
@@ -365,6 +366,7 @@ type RequestVoteArgs struct {
 	CandidateId  int
 	LastLogIndex int
 	LastLogTerm  int
+	PreVote      bool
 }
 
 //
@@ -393,8 +395,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
-		DPrintf("raft %v role change Follower in RequestVote\n", rf.me)
-		rf.convertToFollower(args.Term)
+		if !args.PreVote {
+			DPrintf("raft %v role change Follower in RequestVote\n", rf.me)
+			rf.convertToFollower(args.Term)
+		}
 	}
 
 	//TIP 2B 选举限制Raft 通过比较两份日志中最后一条日志条目的索引值和任期号定义谁的日志比较新。
@@ -404,13 +408,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		(args.LastLogTerm > rf.log[len(rf.log)-1].Term) ||
 		(args.LastLogTerm == rf.log[len(rf.log)-1].Term && args.LastLogIndex >= len(rf.log))) {
 
-		DPrintf("raft %v vote to %v\n", rf.me, args.CandidateId)
-		rf.lastTime = time.Now()
-		rf.electionTimeout = GenElectionTimeout()
-		rf.votedFor = args.CandidateId
+		if !args.PreVote {
+			DPrintf("raft %v vote to %v\n", rf.me, args.CandidateId)
+			rf.lastTime = time.Now()
+			rf.electionTimeout = GenElectionTimeout()
+			rf.votedFor = args.CandidateId
+			rf.persist()
+		}
 		reply.VoteGranted = true
-
-		rf.persist()
 	}
 
 	reply.Term = rf.currentTerm
@@ -525,7 +530,7 @@ func (rf *Raft) killed() bool {
 }
 
 func GenElectionTimeout() int {
-	return rand.Intn(300) + 150
+	return rand.Intn(150) + 150
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -537,7 +542,7 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 
 		rf.mu.Lock()
 		dur := time.Since(rf.lastTime)
@@ -552,27 +557,61 @@ func (rf *Raft) ticker() {
 			//选举超时
 			if role == int(Follower) {
 				rf.mu.Lock()
-				rf.role = int(Candidate)
+				// rf.role = int(Candidate)
+				rf.role = int(PreCandidate)
+				role = int(PreCandidate)
 				rf.mu.Unlock()
 			}
 
-			rf.mu.Lock()
-			rf.currentTerm++
-			rf.votedFor = rf.me
-			//重置选举计时器
-			rf.lastTime = time.Now()
+			if role == int(PreCandidate) {
+				rf.mu.Lock()
+				rf.votedFor = rf.me
+				//重置选举计时器
+				// rf.lastTime = time.Now()
+				// rf.electionTimeout = GenElectionTimeout()
+				rf.persist()
+				rf.mu.Unlock()
 
-			rf.electionTimeout = GenElectionTimeout()
+				rf.execLeaderPreVote()
 
-			rf.persist()
-			rf.mu.Unlock()
-			//向所有其他服务器发送 RequestVote RPC
-			rf.execLeaderVote()
+			} else if role == int(Candidate) {
+				rf.mu.Lock()
+				rf.currentTerm++
+				rf.votedFor = rf.me
+				//重置选举计时器
+				rf.lastTime = time.Now()
+
+				rf.electionTimeout = GenElectionTimeout()
+
+				rf.persist()
+
+				// times:=rf.electionTimeout/50
+				rf.mu.Unlock()
+				//向所有其他服务器发送 RequestVote RPC
+				// rf.execLeaderVote()
+				// go func() {
+				// 	count := 0
+				// 	for {
+				// 		rf.execLeaderVote()
+
+				// 		time.Sleep(100 * time.Millisecond)
+				// 		count += 100
+
+				// 		rf.mu.Lock()
+				// 		role := rf.role
+				// 		rf.mu.Unlock()
+
+				// 		if count >= rf.electionTimeout || role != int(Candidate) {
+				// 			break
+				// 		}
+				// 	}
+				// }()
+				rf.execLeaderVote()
+			}
 		}
 
 		if time.Since(lastHeartBeat).Milliseconds() > 100 && role == int(Leader) {
 			lastHeartBeat = time.Now()
-			// DPrintf("raft %v run execHeartBeats\n", rf.me)
 			rf.execHeartBeats()
 		}
 
@@ -626,6 +665,52 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+func (rf *Raft) execLeaderVote2(peer int, currentTerm int, lastLogIndex int, lastLogTerm int, votes map[int]int) {
+
+	args := &RequestVoteArgs{
+		Term:         currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
+		PreVote:      false,
+	}
+	reply := &RequestVoteReply{}
+
+	ok := rf.sendRequestVote(peer, args, reply)
+
+	if ok {
+
+		rf.mu.Lock()
+		if args.Term != rf.currentTerm || rf.role != int(Candidate) {
+			rf.mu.Unlock()
+			return
+		}
+
+		if reply.Term > rf.currentTerm {
+			DPrintf("raft %v role change Follower in execLeaderVote\n", rf.me)
+			rf.convertToFollower(reply.Term)
+			rf.mu.Unlock()
+			return
+		}
+
+		if reply.VoteGranted && reply.Term == rf.currentTerm {
+			votes[peer] = 1
+			DPrintf("Term %v raft %v Got Votes %v Total %v\n", rf.currentTerm, rf.me, votes, len(rf.peers))
+			//提前，防止超时变为Follower
+			if rf.role == int(Candidate) {
+				// DPrintf("raft %v got votes %v\n", rf.me, votes)
+				if votesWin(len(votes), len(rf.peers)) {
+					rf.convertToLeader()
+					// go rf.execHeartBeats()
+					DPrintf("raft %v win become the leader\n", rf.me)
+				}
+			}
+		}
+
+		rf.mu.Unlock()
+	}
+}
+
 func (rf *Raft) execLeaderVote() {
 
 	votes := make(map[int]int, len(rf.peers))
@@ -645,52 +730,110 @@ func (rf *Raft) execLeaderVote() {
 		if i == rf.me {
 			continue
 		}
+		go rf.execLeaderVote2(i, currentTerm, lastLogIndex, lastLogTerm, votes)
+		// go func(peer, currentTerm, lastLogIndex, lastLogTerm int, votes map[int]int) {
+		// 	count := 0
+		// 	for {
+		// 		go rf.execLeaderVote2(peer, currentTerm, lastLogIndex, lastLogTerm, votes)
+		// 		DPrintf("Term %v raft %v send vote rpc to raft %v\n", currentTerm, rf.me, peer)
 
-		go func(peer int, currentTerm int, lastLogIndex int, lastLogTerm int) {
+		// 		time.Sleep(150 * time.Millisecond)
+		// 		count += 150
 
-			args := &RequestVoteArgs{
-				Term:         currentTerm,
-				CandidateId:  rf.me,
-				LastLogIndex: lastLogIndex,
-				LastLogTerm:  lastLogTerm,
-			}
-			reply := &RequestVoteReply{}
+		// 		rf.mu.Lock()
+		// 		tmpTerm := rf.currentTerm
+		// 		role := rf.role
+		// 		rf.mu.Unlock()
 
-			ok := rf.sendRequestVote(peer, args, reply)
-
-			if ok {
-
-				rf.mu.Lock()
-				if args.Term != rf.currentTerm || rf.role != int(Candidate) {
-					rf.mu.Unlock()
-					return
-				}
-
-				if reply.Term > rf.currentTerm {
-					DPrintf("raft %v role change Follower in execLeaderVote\n", rf.me)
-					rf.convertToFollower(reply.Term)
-					rf.mu.Unlock()
-					return
-				}
-
-				if reply.VoteGranted && reply.Term == rf.currentTerm {
-					votes[peer] = 1
-					DPrintf("Term %v raft %v Got Votes %v Total %v\n", rf.currentTerm, rf.me, votes, len(rf.peers))
-					//提前，防止超时变为Follower
-					if rf.role == int(Candidate) {
-						// DPrintf("raft %v got votes %v\n", rf.me, votes)
-						if votesWin(len(votes), len(rf.peers)) {
-							rf.convertToLeader()
-							// go rf.execHeartBeats()
-							DPrintf("raft %v win become the leader\n", rf.me)
-						}
-					}
-				}
-
-				rf.mu.Unlock()
-			}
-		}(i, currentTerm, lastLogIndex, lastLogTerm)
+		// 		if count >= rf.electionTimeout || tmpTerm != currentTerm || role != int(Candidate) {
+		// 			break
+		// 		}
+		// 	}
+		// }(i, currentTerm, lastLogIndex, lastLogTerm, votes)
 	}
+}
+
+func (rf *Raft) execLeaderPreVote() {
+	go func() {
+		startTime := 0
+
+		votes := 1
+
+		rf.mu.Lock()
+		currentTerm := rf.currentTerm + 1
+		lastLogIndex := len(rf.log)
+		lastLogTerm := -1
+		if lastLogIndex > 0 {
+			lastLogTerm = rf.log[lastLogIndex-1].Term
+		}
+		electionTimeout := rf.electionTimeout
+		DPrintf("Term %v raft %v start PreVote\n", currentTerm, rf.me)
+		rf.mu.Unlock()
+
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			go func(peer, currentTerm, lastLogIndex, lastLogTerm int) {
+				args := &RequestVoteArgs{
+					Term:         currentTerm,
+					CandidateId:  rf.me,
+					LastLogIndex: lastLogIndex,
+					LastLogTerm:  lastLogTerm,
+					PreVote:      true,
+				}
+				reply := &RequestVoteReply{}
+
+				ok := rf.sendRequestVote(peer, args, reply)
+
+				if ok {
+					rf.mu.Lock()
+					if args.Term != rf.currentTerm+1 || rf.role != int(PreCandidate) {
+						rf.mu.Unlock()
+						return
+					}
+
+					if reply.Term > rf.currentTerm+1 {
+						DPrintf("raft %v role change Follower in execLeaderVote\n", rf.me)
+						rf.convertToFollower(reply.Term)
+
+						rf.mu.Unlock()
+						return
+					}
+
+					if reply.VoteGranted && reply.Term == rf.currentTerm {
+						votes++
+						DPrintf("PreVote Term %v raft %v Got Votes %v Total %v\n", rf.currentTerm, rf.me, votes, len(rf.peers))
+					}
+
+					rf.mu.Unlock()
+				}
+			}(i, currentTerm, lastLogIndex, lastLogTerm)
+
+		}
+
+		for {
+			//提前，防止超时变为Follower
+			if rf.role == int(PreCandidate) {
+				// DPrintf("raft %v got votes %v\n", rf.me, votes)
+				if votesWin(votes, len(rf.peers)) {
+					rf.role = int(Candidate)
+					// go rf.execHeartBeats()
+					DPrintf("raft %v win become the PreVote\n", rf.me)
+					break
+				}
+			} else {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+			startTime += 10
+			if startTime > electionTimeout {
+				rf.convertToFollower(rf.currentTerm)
+				break
+			}
+		}
+		DPrintf("currentTerm %v raft %v finished PreVote\n", currentTerm, rf.me)
+	}()
 }
 
 func (rf *Raft) execHeartBeats2(peer int, currentTerm int, commitIndex int) {
@@ -807,8 +950,9 @@ func (rf *Raft) execHeartBeats2(peer int, currentTerm int, commitIndex int) {
 				}
 
 				DPrintf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
-
-				go rf.execHeartBeats2(peer, rf.currentTerm, rf.commitIndex)
+				if rf.role == int(Leader) {
+					go rf.execHeartBeats2(peer, rf.currentTerm, rf.commitIndex)
+				}
 			}
 		}
 
@@ -832,11 +976,12 @@ func (rf *Raft) execHeartBeats() {
 	currentTerm := rf.currentTerm
 	commitIndex := rf.commitIndex
 	rf.mu.Unlock()
-
+	DPrintf("raft %v send heartbeat\n", rf.me)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
+
 		go rf.execHeartBeats2(i, currentTerm, commitIndex)
 	}
 	// for i := 0; i < len(rf.peers); i++ {
