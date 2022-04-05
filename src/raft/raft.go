@@ -246,7 +246,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.Term > rf.currentTerm || rf.role == int(Candidate) {
+	if args.Term > rf.currentTerm {
 		DPrintf("raft %v role change Follower in AppendEntries\n", rf.me)
 		rf.convertToFollower(args.Term)
 	}
@@ -628,7 +628,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func (rf *Raft) execLeaderVote() {
 
-	votes := 1
+	votes := make(map[int]int, len(rf.peers))
+	votes[rf.me] = 1
 
 	rf.mu.Lock()
 	currentTerm := rf.currentTerm
@@ -673,12 +674,12 @@ func (rf *Raft) execLeaderVote() {
 				}
 
 				if reply.VoteGranted && reply.Term == rf.currentTerm {
-					votes++
+					votes[peer] = 1
 					DPrintf("Term %v raft %v Got Votes %v Total %v\n", rf.currentTerm, rf.me, votes, len(rf.peers))
 					//提前，防止超时变为Follower
 					if rf.role == int(Candidate) {
 						// DPrintf("raft %v got votes %v\n", rf.me, votes)
-						if votesWin(votes, len(rf.peers)) {
+						if votesWin(len(votes), len(rf.peers)) {
 							rf.convertToLeader()
 							// go rf.execHeartBeats()
 							DPrintf("raft %v win become the leader\n", rf.me)
@@ -689,6 +690,129 @@ func (rf *Raft) execLeaderVote() {
 				rf.mu.Unlock()
 			}
 		}(i, currentTerm, lastLogIndex, lastLogTerm)
+	}
+}
+
+func (rf *Raft) execHeartBeats2(peer int, currentTerm int, commitIndex int) {
+	rf.mu.Lock()
+	var entries []LogEntry
+	prevLogIndex := rf.nextIndex[peer] - 1
+	prevLogTerm := -1
+	if prevLogIndex > 0 {
+		prevLogTerm = rf.log[prevLogIndex-1].Term
+	}
+
+	if len(rf.log) >= prevLogIndex+1 {
+		entries = rf.log[prevLogIndex:]
+	}
+
+	args := &AppendEntriesArgs{
+		Term:         currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      entries,
+		LeaderCommit: commitIndex,
+	}
+	reply := &AppendEntriesReply{}
+
+	rf.mu.Unlock()
+
+	ok := rf.sendAppendEntries(peer, args, reply)
+	if ok {
+		rf.mu.Lock()
+
+		if args.Term != rf.currentTerm || rf.role != int(Leader) {
+			rf.mu.Unlock()
+			return
+		}
+
+		if reply.Term > rf.currentTerm {
+			DPrintf("raft %v role change Follower in execHeartBeats\n", rf.me)
+			rf.convertToFollower(reply.Term)
+			rf.mu.Unlock()
+			return
+		}
+
+		/*
+			由于RPC在网络中可能乱序或者延迟，我们要确保当前RPC发送时的term、
+			当前接收时的currentTerm以及RPC的reply.term三者一致，
+			丢弃过去term的RPC，避免对当前currentTerm产生错误的影响。
+		*/
+		if args.Term == rf.currentTerm && reply.Term == rf.currentTerm {
+			if reply.Success {
+				// If there exists an N such that N > commitIndex, a majority
+				// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+				// set commitIndex = N (§5.3, §5.4).
+				rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+				rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+				DPrintf("Leader %v set raft %v nextIndex %v matchIndex %v\n", rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
+
+				matchIndexs := make([]int, len(rf.peers))
+				copy(matchIndexs, rf.matchIndex)
+				sort.Ints(matchIndexs)
+				DPrintf("Leader %v sortMatchIndex %v\n", rf.me, matchIndexs)
+				majoryPos := (len(rf.peers) - 1) / 2
+				for i := majoryPos; i >= 0 && matchIndexs[i] > rf.commitIndex; i-- {
+					if rf.log[matchIndexs[i]-1].Term == rf.currentTerm {
+						rf.commitIndex = matchIndexs[i]
+
+						//apply msg
+						// go func() {
+						// 	rf.mu.Lock()
+						// 	commitIndex := rf.commitIndex
+						// 	lastApplyed := rf.lastApplied
+						// 	ens := rf.log
+						// 	rf.mu.Unlock()
+
+						// 	for i := lastApplyed + 1; i <= commitIndex; i++ {
+						// 		msg := ApplyMsg{
+						// 			CommandValid: true,
+						// 			CommandIndex: i,
+						// 			Command:      ens[i-1].Command,
+						// 		}
+						// 		rf.applyCh <- msg
+						// 		rf.mu.Lock()
+						// 		rf.lastApplied = i
+						// 		rf.mu.Unlock()
+						// 	}
+
+						// }()
+					}
+
+					rf.applyWork = true
+					rf.applyCond.Broadcast()
+				}
+
+				DPrintf("Leader %v commitIndex %v\n", rf.me, rf.commitIndex)
+			} else {
+				//需要快速回退
+				//一致性检查失败,nextIndex回退,因rpc可能会重发不可用递减回退
+				rf.nextIndex[peer] = prevLogIndex
+
+				if reply.XTerm == -1 {
+					rf.nextIndex[peer] = args.PrevLogIndex + 1 - reply.XLen
+				} else {
+					/*
+						Leader发现自己其实有任期XTerm的日志，它会将自己本地记录的Follower的nextIndex设置到本地在XTerm位置的Log条目后面，
+						下一次Leader发出下一条AppendEntries时，就可以一次覆盖Follower中槽位2和槽位3对应的Log。
+					*/
+					for i := rf.nextIndex[peer] - 1; i >= reply.XIndex; i-- {
+						if rf.log[i-1].Term != reply.XTerm {
+							rf.nextIndex[peer]--
+						} else {
+							break
+						}
+					}
+				}
+
+				DPrintf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
+
+				go rf.execHeartBeats2(peer, rf.currentTerm, rf.commitIndex)
+			}
+		}
+
+		rf.mu.Unlock()
 	}
 }
 
@@ -713,129 +837,135 @@ func (rf *Raft) execHeartBeats() {
 		if i == rf.me {
 			continue
 		}
-		// DPrintf("Leader %v currTerm %v to raft %v execHeartBeats log %v \n", rf.me, currentTerm, i, rf.log)
-		go func(peer int, currentTerm int, commitIndex int) {
-
-			rf.mu.Lock()
-			var entries []LogEntry
-			prevLogIndex := rf.nextIndex[peer] - 1
-			prevLogTerm := -1
-			if prevLogIndex > 0 {
-				prevLogTerm = rf.log[prevLogIndex-1].Term
-			}
-
-			if len(rf.log) >= prevLogIndex+1 {
-				entries = rf.log[prevLogIndex:]
-			}
-
-			args := &AppendEntriesArgs{
-				Term:         currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      entries,
-				LeaderCommit: commitIndex,
-			}
-			reply := &AppendEntriesReply{}
-
-			rf.mu.Unlock()
-
-			ok := rf.sendAppendEntries(peer, args, reply)
-			if ok {
-				rf.mu.Lock()
-
-				if args.Term != rf.currentTerm || rf.role != int(Leader) {
-					rf.mu.Unlock()
-					return
-				}
-
-				if reply.Term > rf.currentTerm {
-					DPrintf("raft %v role change Follower in execHeartBeats\n", rf.me)
-					rf.convertToFollower(reply.Term)
-					rf.mu.Unlock()
-					return
-				}
-
-				/*
-					由于RPC在网络中可能乱序或者延迟，我们要确保当前RPC发送时的term、
-					当前接收时的currentTerm以及RPC的reply.term三者一致，
-					丢弃过去term的RPC，避免对当前currentTerm产生错误的影响。
-				*/
-				if args.Term == rf.currentTerm && reply.Term == rf.currentTerm {
-					if reply.Success {
-						// If there exists an N such that N > commitIndex, a majority
-						// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
-						// set commitIndex = N (§5.3, §5.4).
-						rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
-						rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
-						DPrintf("Leader %v set raft %v nextIndex %v matchIndex %v\n", rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
-
-						matchIndexs := make([]int, len(rf.peers))
-						copy(matchIndexs, rf.matchIndex)
-						sort.Ints(matchIndexs)
-						DPrintf("Leader %v sortMatchIndex %v\n", rf.me, matchIndexs)
-						majoryPos := (len(rf.peers) - 1) / 2
-						for i := majoryPos; i >= 0 && matchIndexs[i] > rf.commitIndex; i-- {
-							if rf.log[matchIndexs[i]-1].Term == rf.currentTerm {
-								rf.commitIndex = matchIndexs[i]
-
-								//apply msg
-								// go func() {
-								// 	rf.mu.Lock()
-								// 	commitIndex := rf.commitIndex
-								// 	lastApplyed := rf.lastApplied
-								// 	ens := rf.log
-								// 	rf.mu.Unlock()
-
-								// 	for i := lastApplyed + 1; i <= commitIndex; i++ {
-								// 		msg := ApplyMsg{
-								// 			CommandValid: true,
-								// 			CommandIndex: i,
-								// 			Command:      ens[i-1].Command,
-								// 		}
-								// 		rf.applyCh <- msg
-								// 		rf.mu.Lock()
-								// 		rf.lastApplied = i
-								// 		rf.mu.Unlock()
-								// 	}
-
-								// }()
-							}
-
-							rf.applyWork = true
-							rf.applyCond.Broadcast()
-						}
-
-						DPrintf("Leader %v commitIndex %v\n", rf.me, rf.commitIndex)
-					} else {
-						//需要快速回退
-						//一致性检查失败,nextIndex回退,因rpc可能会重发不可用递减回退
-						rf.nextIndex[peer] = prevLogIndex
-
-						if reply.XTerm == -1 {
-							rf.nextIndex[peer] = args.PrevLogIndex + 1 - reply.XLen
-						} else {
-							/*
-								Leader发现自己其实有任期XTerm的日志，它会将自己本地记录的Follower的nextIndex设置到本地在XTerm位置的Log条目后面，
-								下一次Leader发出下一条AppendEntries时，就可以一次覆盖Follower中槽位2和槽位3对应的Log。
-							*/
-							for i := rf.nextIndex[peer] - 1; i >= reply.XIndex; i-- {
-								if rf.log[i-1].Term != reply.XTerm {
-									rf.nextIndex[peer]--
-								} else {
-									break
-								}
-							}
-						}
-
-						DPrintf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
-					}
-				}
-
-				rf.mu.Unlock()
-			}
-		}(i, currentTerm, commitIndex)
+		go rf.execHeartBeats2(i, currentTerm, commitIndex)
 	}
+	// for i := 0; i < len(rf.peers); i++ {
+	// 	if i == rf.me {
+	// 		continue
+	// 	}
+	// 	// DPrintf("Leader %v currTerm %v to raft %v execHeartBeats log %v \n", rf.me, currentTerm, i, rf.log)
+	// 	go func(peer int, currentTerm int, commitIndex int) {
+
+	// 		rf.mu.Lock()
+	// 		var entries []LogEntry
+	// 		prevLogIndex := rf.nextIndex[peer] - 1
+	// 		prevLogTerm := -1
+	// 		if prevLogIndex > 0 {
+	// 			prevLogTerm = rf.log[prevLogIndex-1].Term
+	// 		}
+
+	// 		if len(rf.log) >= prevLogIndex+1 {
+	// 			entries = rf.log[prevLogIndex:]
+	// 		}
+
+	// 		args := &AppendEntriesArgs{
+	// 			Term:         currentTerm,
+	// 			LeaderId:     rf.me,
+	// 			PrevLogIndex: prevLogIndex,
+	// 			PrevLogTerm:  prevLogTerm,
+	// 			Entries:      entries,
+	// 			LeaderCommit: commitIndex,
+	// 		}
+	// 		reply := &AppendEntriesReply{}
+
+	// 		rf.mu.Unlock()
+
+	// 		ok := rf.sendAppendEntries(peer, args, reply)
+	// 		if ok {
+	// 			rf.mu.Lock()
+
+	// 			if args.Term != rf.currentTerm || rf.role != int(Leader) {
+	// 				rf.mu.Unlock()
+	// 				return
+	// 			}
+
+	// 			if reply.Term > rf.currentTerm {
+	// 				DPrintf("raft %v role change Follower in execHeartBeats\n", rf.me)
+	// 				rf.convertToFollower(reply.Term)
+	// 				rf.mu.Unlock()
+	// 				return
+	// 			}
+
+	// 			/*
+	// 				由于RPC在网络中可能乱序或者延迟，我们要确保当前RPC发送时的term、
+	// 				当前接收时的currentTerm以及RPC的reply.term三者一致，
+	// 				丢弃过去term的RPC，避免对当前currentTerm产生错误的影响。
+	// 			*/
+	// 			if args.Term == rf.currentTerm && reply.Term == rf.currentTerm {
+	// 				if reply.Success {
+	// 					// If there exists an N such that N > commitIndex, a majority
+	// 					// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// 					// set commitIndex = N (§5.3, §5.4).
+	// 					rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+	// 					rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+	// 					DPrintf("Leader %v set raft %v nextIndex %v matchIndex %v\n", rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
+
+	// 					matchIndexs := make([]int, len(rf.peers))
+	// 					copy(matchIndexs, rf.matchIndex)
+	// 					sort.Ints(matchIndexs)
+	// 					DPrintf("Leader %v sortMatchIndex %v\n", rf.me, matchIndexs)
+	// 					majoryPos := (len(rf.peers) - 1) / 2
+	// 					for i := majoryPos; i >= 0 && matchIndexs[i] > rf.commitIndex; i-- {
+	// 						if rf.log[matchIndexs[i]-1].Term == rf.currentTerm {
+	// 							rf.commitIndex = matchIndexs[i]
+
+	// 							//apply msg
+	// 							// go func() {
+	// 							// 	rf.mu.Lock()
+	// 							// 	commitIndex := rf.commitIndex
+	// 							// 	lastApplyed := rf.lastApplied
+	// 							// 	ens := rf.log
+	// 							// 	rf.mu.Unlock()
+
+	// 							// 	for i := lastApplyed + 1; i <= commitIndex; i++ {
+	// 							// 		msg := ApplyMsg{
+	// 							// 			CommandValid: true,
+	// 							// 			CommandIndex: i,
+	// 							// 			Command:      ens[i-1].Command,
+	// 							// 		}
+	// 							// 		rf.applyCh <- msg
+	// 							// 		rf.mu.Lock()
+	// 							// 		rf.lastApplied = i
+	// 							// 		rf.mu.Unlock()
+	// 							// 	}
+
+	// 							// }()
+	// 						}
+
+	// 						rf.applyWork = true
+	// 						rf.applyCond.Broadcast()
+	// 					}
+
+	// 					DPrintf("Leader %v commitIndex %v\n", rf.me, rf.commitIndex)
+	// 				} else {
+	// 					//需要快速回退
+	// 					//一致性检查失败,nextIndex回退,因rpc可能会重发不可用递减回退
+	// 					rf.nextIndex[peer] = prevLogIndex
+
+	// 					if reply.XTerm == -1 {
+	// 						rf.nextIndex[peer] = args.PrevLogIndex + 1 - reply.XLen
+	// 					} else {
+	// 						/*
+	// 							Leader发现自己其实有任期XTerm的日志，它会将自己本地记录的Follower的nextIndex设置到本地在XTerm位置的Log条目后面，
+	// 							下一次Leader发出下一条AppendEntries时，就可以一次覆盖Follower中槽位2和槽位3对应的Log。
+	// 						*/
+	// 						for i := rf.nextIndex[peer] - 1; i >= reply.XIndex; i-- {
+	// 							if rf.log[i-1].Term != reply.XTerm {
+	// 								rf.nextIndex[peer]--
+	// 							} else {
+	// 								break
+	// 							}
+	// 						}
+	// 					}
+
+	// 					DPrintf("回退 raft %v nextIndex %v\n", peer, rf.nextIndex[peer])
+	// 				}
+	// 			}
+
+	// 			rf.mu.Unlock()
+	// 		}
+	// 	}(i, currentTerm, commitIndex)
+	// }
 }
 
 func votesWin(votes int, total int) bool {

@@ -721,7 +721,8 @@ func TestPersist32C(t *testing.T) {
 	cfg.end()
 }
 
-
+//添加了快速回退，即当Leader收到需要回退的reply后对该peer立即发送appendEntries请求
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 //
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft
@@ -817,6 +818,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
+//理论上应该添加重复投票
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
