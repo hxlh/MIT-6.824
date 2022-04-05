@@ -350,6 +350,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//更新选举计时器
 	rf.lastTime = time.Now()
+	rf.electionTimeout = GenElectionTimeout()
 	reply.Success = true
 	return
 }
@@ -405,6 +406,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		DPrintf("raft %v vote to %v\n", rf.me, args.CandidateId)
 		rf.lastTime = time.Now()
+		rf.electionTimeout = GenElectionTimeout()
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 
@@ -523,7 +525,7 @@ func (rf *Raft) killed() bool {
 }
 
 func GenElectionTimeout() int {
-	return rand.Intn(150) + 150
+	return rand.Intn(300) + 150
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -559,6 +561,7 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			//重置选举计时器
 			rf.lastTime = time.Now()
+
 			rf.electionTimeout = GenElectionTimeout()
 
 			rf.persist()
@@ -567,9 +570,9 @@ func (rf *Raft) ticker() {
 			rf.execLeaderVote()
 		}
 
-		if time.Since(lastHeartBeat).Milliseconds() > 130 && role == int(Leader) {
+		if time.Since(lastHeartBeat).Milliseconds() > 100 && role == int(Leader) {
 			lastHeartBeat = time.Now()
-			DPrintf("raft %v run execHeartBeats\n", rf.me)
+			// DPrintf("raft %v run execHeartBeats\n", rf.me)
 			rf.execHeartBeats()
 		}
 
@@ -634,6 +637,7 @@ func (rf *Raft) execLeaderVote() {
 	if lastLogIndex > 0 {
 		lastLogTerm = rf.log[lastLogIndex-1].Term
 	}
+	DPrintf("raft %v start LeaderVote\n", rf.me)
 	rf.mu.Unlock()
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -670,6 +674,7 @@ func (rf *Raft) execLeaderVote() {
 
 				if reply.VoteGranted && reply.Term == rf.currentTerm {
 					votes++
+					DPrintf("Term %v raft %v Got Votes %v Total %v\n", rf.currentTerm, rf.me, votes, len(rf.peers))
 					//提前，防止超时变为Follower
 					if rf.role == int(Candidate) {
 						// DPrintf("raft %v got votes %v\n", rf.me, votes)
@@ -708,7 +713,7 @@ func (rf *Raft) execHeartBeats() {
 		if i == rf.me {
 			continue
 		}
-		DPrintf("Leader %v currTerm %v to raft %v execHeartBeats log %v \n", rf.me, currentTerm, i, rf.log)
+		// DPrintf("Leader %v currTerm %v to raft %v execHeartBeats log %v \n", rf.me, currentTerm, i, rf.log)
 		go func(peer int, currentTerm int, commitIndex int) {
 
 			rf.mu.Lock()
@@ -841,16 +846,17 @@ func votesWin(votes int, total int) bool {
 }
 
 func (rf *Raft) convertToFollower(T int) {
-	DPrintf("raft %v change to follower oTerm %v afterTerm %v\n", rf.me, rf.currentTerm, T)
 	rf.currentTerm = T
 	rf.role = int(Follower)
 	rf.lastTime = time.Now()
+	rf.electionTimeout = GenElectionTimeout()
 	rf.votedFor = -1
 	rf.persist()
 }
 
 func (rf *Raft) convertToLeader() {
 	rf.lastTime = time.Now()
+	rf.electionTimeout = GenElectionTimeout()
 	rf.role = int(Leader)
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = len(rf.log) + 1

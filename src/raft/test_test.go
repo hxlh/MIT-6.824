@@ -416,7 +416,7 @@ func TestRejoin2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 250+150 100/100; 93 ok, 7 failed
 func TestBackup2B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -488,7 +488,7 @@ func TestBackup2B(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 250+150 100/100; 100 ok, 0 failed
 func TestCount2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -598,7 +598,7 @@ loop:
 
 	cfg.end()
 }
-
+//100 beats election 250+150 (base+rand(150)) 100/100; 100 ok, 0 failed
 func TestPersist12C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -644,7 +644,7 @@ func TestPersist12C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 func TestPersist22C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
@@ -690,7 +690,7 @@ func TestPersist22C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 func TestPersist32C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -720,6 +720,7 @@ func TestPersist32C(t *testing.T) {
 
 	cfg.end()
 }
+
 
 //
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
@@ -786,7 +787,7 @@ func TestFigure82C(t *testing.T) {
 
 	cfg.end()
 }
-
+//100 beats election 150+300 (base+rand(300)) 100/100; 100 ok, 0 failed
 func TestUnreliableAgree2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
