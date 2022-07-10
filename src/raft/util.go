@@ -13,7 +13,7 @@ const Disable =false
 
 const Debug = Disable
 const Debug2 = Disable
-const ApplyLogOutput = Enable
+const ApplyLogOutput = Disable
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {

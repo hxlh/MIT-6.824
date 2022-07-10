@@ -1,15 +1,18 @@
 package kvraft
 
 import (
-	"6.824/labgob"
-	"6.824/labrpc"
-	"6.824/raft"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -18,11 +21,17 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Op  string
+	Seq int64
+	Cid int64
+	Key string
+	Val string
+	//引入该字段解决当请求超时时协程退出后channel没有接受者的问题
+	InTime int64
 }
 
 type KVServer struct {
@@ -35,15 +44,110 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	//cid->seq
+	seqm map[int64]int64
+	//index->ch
+	chm map[int]chan interface{}
+	//data kv
+	data map[string]string
+	//lab3B last apply log
+	lastApply int
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.mu.Lock()
+	//seq去重(对Get不处理)
+	op := Op{
+		Op:  "Get",
+		Seq: args.Seq,
+		Cid: args.Cid,
+		Key: args.Key,
+		InTime: time.Now().UnixMilli(),
+	}
+
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	DPrintf("Server %v recv Index %v Get key %v\n",kv.me,index,op.Key)
+
+	ch := make(chan interface{}, 0)
+	kv.chm[index] = ch
+
+	kv.mu.Unlock()
+
+	ticker := time.NewTicker(RequestTimeout)
+
+	select {
+	case <-ticker.C:
+		//超时
+		//不删除会导致超时后ch无人接受，导致死锁
+		reply.Err = ErrWrongLeader
+		return
+	case c := <-ch:
+		rp := c.(GetReply)
+		reply.Err = rp.Err
+		reply.Value = rp.Value
+		return
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+	kv.mu.Lock()
+
+	//seq去重
+	seq := kv.seqm[args.Cid]
+	if args.Seq <= seq {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+
+	op := Op{
+		Op:  args.Op,
+		Seq: args.Seq,
+		Cid: args.Cid,
+		Key: args.Key,
+		Val: args.Value,
+		InTime: time.Now().UnixMilli(),
+	}
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	DPrintf("Server %v recv Index %v PutAppend key %v\n",kv.me,index, op.Key)
+	ch := make(chan interface{}, 0)
+	kv.chm[index] = ch
+
+	kv.mu.Unlock()
+
+	ticker := time.NewTicker(RequestTimeout)
+
+	select {
+	case <-ticker.C:
+		//超时
+		reply.Err = ErrWrongLeader
+		return
+	case c := <-ch:
+		rp := c.(PutAppendReply)
+		reply.Err = rp.Err
+		return
+	}
+}
+
+func (kv *KVServer) Put(op *Op) {
+	kv.data[op.Key] = op.Val
+}
+
+func (kv *KVServer) Append(op *Op) {
+	kv.data[op.Key] = kv.data[op.Key] + op.Val
 }
 
 //
@@ -96,6 +200,157 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.seqm = make(map[int64]int64)
+	kv.chm = make(map[int]chan interface{})
+	kv.data = make(map[string]string)
+
+	kv.initStatus(persister)
+
+	go kv.applyLoop()
 
 	return kv
+}
+
+func (kv *KVServer) initStatus(persister *raft.Persister) {
+	DPrintf("Server %v init map %v\n", kv.me,kv.data)
+	kv.applySnapshot(kv.rf.ReadSnapshot())
+
+	data := persister.ReadRaftState()
+	if data == nil || len(data) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var lastSnapshotIndex int
+	var lastSnapshotTerm int
+	var lastApplied int
+	var currentTerm int
+	var votedFor int
+	var entries []raft.LogEntry
+
+	if d.Decode(&lastSnapshotIndex) != nil ||
+		d.Decode(&lastSnapshotTerm) != nil ||
+		d.Decode(&lastApplied) != nil ||
+		d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&entries) != nil {
+		panic("readPersist err")
+	} else {
+		kv.lastApply = lastApplied
+		DPrintf("Server %v lastSnapshotIndex %v lastapplied %v len(log) %v\n",kv.me,lastSnapshotIndex,lastApplied,len(entries))
+		for i := lastSnapshotIndex+1; i <= lastApplied; i++ {
+			op := entries[i-lastSnapshotIndex-1].Command.(Op)
+			seq := kv.seqm[op.Cid]
+			if op.Seq > seq {
+				kv.seqm[op.Cid] = op.Seq
+			}else {
+				continue
+			}
+
+			if op.Op == "Get" {
+				continue
+			} else if op.Op == "Put" {
+				kv.Put(&op)
+			} else if op.Op == "Append" {
+				kv.Append(&op)
+			}
+		}
+	}
+}
+
+func (kv *KVServer) applyLoop() {
+	for {
+		msg, ok := <-kv.applyCh
+		if !ok {
+			break
+		}
+		kv.mu.Lock()
+		//最后apply的log
+
+		//apply的日志所有的raft都是相同的
+		//msg.Command可能为nil，此时提交的applyMsg是快照
+
+		//lab3B应用快照
+		if msg.SnapshotValid {
+			if kv.lastApply < msg.SnapshotIndex {
+				kv.applySnapshot(msg.Snapshot)
+				kv.lastApply = msg.SnapshotIndex
+			}
+			kv.mu.Unlock()
+			continue
+		}
+		op := msg.Command.(Op)
+		seq := kv.seqm[op.Cid]
+		kv.lastApply = msg.CommandIndex
+
+		if op.Seq > seq {
+			kv.seqm[op.Cid] = op.Seq
+		} else if op.Op != "Get" {
+			kv.mu.Unlock()
+			continue
+		}
+		
+		if _, iL := kv.rf.GetState(); iL {
+			//Leader
+			var reply interface{}
+			if op.Op == "Get" {
+				reply=GetReply{
+					Err: OK,
+					Value: kv.data[op.Key],
+				}
+				DPrintf("Leader %v exec Index %v Seq %v Get key %v\n",kv.me, msg.CommandIndex, op.Seq, op.Key)
+			} else {
+				//必须保证PutAppend和seq更新在同一处更新，否则会出现以下丢失log情况
+				//错误过程，由于请求有超时时间，如收到apply后更新seq，但在请求协程中处理PutAppend可能会出现seq更新了，但实际上该seq操作（PutAppend）并未执行
+				if op.Op == "Put" {
+					kv.Put(&op)
+				} else {
+					kv.Append(&op)
+				}
+				reply=PutAppendReply{
+					Err: OK,
+				}
+				DPrintf("Leader %v exec Index %v Seq %v PutApeend key %v\n",kv.me,msg.CommandIndex, op.Seq, op.Key)
+			}
+			//唤醒对应协程
+			ch, ok := kv.chm[msg.CommandIndex]
+			if ok {
+				delete(kv.chm, msg.CommandIndex)
+				//接受到请求到Apply的间隔
+				dur:=(time.Now().UnixMilli()-op.InTime)*time.Hour.Milliseconds()
+				if  dur < int64(RequestTimeout-RequestTimeoutDeviation){
+					ch <- reply
+				}
+			}
+		} else {
+			//Follower
+			if op.Op != "Get" {
+				DPrintf("Follower %v exec Index %v Seq %v PutApeend key %v\n",kv.me,msg.CommandIndex, op.Seq, op.Key)
+				if op.Op == "Put" {
+					kv.Put(&op)
+				} else {
+					kv.Append(&op)
+				}
+			}
+		}
+
+		//保存快照
+		if kv.maxraftstate < kv.rf.GetRaftStateSize() && kv.maxraftstate > 0 {
+			w := bytes.NewBuffer([]byte{})
+			e := labgob.NewEncoder(w)
+			e.Encode(kv.seqm)
+			e.Encode(kv.data)
+			kv.rf.Snapshot(kv.lastApply, w.Bytes())
+		}
+
+		kv.mu.Unlock()
+	}
+	DPrintf("Server %v quit applyLoop\n",kv.me)
+}
+
+func (kv *KVServer) applySnapshot(data []byte) {
+	r := bytes.NewReader(data)
+	d := labgob.NewDecoder(r)
+	d.Decode(&kv.seqm)
+	d.Decode(&kv.data)
 }

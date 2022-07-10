@@ -282,6 +282,11 @@ type InstallSnapshotReply struct {
 //BUG 应该与ApplyLoop越界情况类似2022年5月22日00:58:01
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
+	if rf.killed(){
+		rf.mu.Unlock()
+		return
+	}
+
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm || args.LastIndex <= rf.lastSnapshotIndex || rf.needApplySnapshot {
 		rf.mu.Unlock()
@@ -1311,24 +1316,6 @@ func (rf *Raft) convertToLeader() {
 
 func (rf *Raft) applyLoop() {
 	DPrintf3("raft %v apply loop start\n", rf.me)
-	// rf.mu.Lock()
-	// for i := rf.lastSnapshotIndex + 1; i <= rf.lastApplied; i++ {
-	// 	msg := ApplyMsg{
-	// 		CommandValid: true,
-	// 		CommandIndex: i,
-	// 		Command:      rf.log[i-rf.lastSnapshotIndex-1].Command,
-	// 	}
-	// 	rf.applyCh <- msg
-	// 	DPrintf("初始化apply丢失的log %v\n", msg.Command)
-	// 	DPrintf2(" raft %v 初始化apply丢失的log %v\n", rf.Me(), msg.Command)
-	// }
-
-	// msg := ApplyMsg{
-	// 	CommandValid: false,
-	// }
-	// rf.applyCh <- msg
-
-	// rf.mu.Unlock()
 
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -1360,6 +1347,19 @@ func (rf *Raft) applyLoop() {
 			rf.applyCh <- msg
 		}
 	}
+
+	//quit loop
+	//可能存在提交快照前，执行了close(rf.applyCh)导致send on closed channel
+	for{
+		rf.mu.Lock()
+		if !rf.needApplySnapshot{
+			close(rf.applyCh)
+			rf.mu.Unlock()
+			break
+		}
+		rf.mu.Unlock()
+		time.Sleep(500*time.Millisecond)
+	}
 	DPrintf3("raft %v apply loop quit\n", rf.me)
 }
 
@@ -1374,3 +1374,5 @@ func (rf *Raft) GetRaftStateSize() int {
 func (rf *Raft) ReadSnapshot() []byte {
 	return rf.persister.ReadSnapshot()
 }
+
+
