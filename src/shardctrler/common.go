@@ -1,5 +1,7 @@
 package shardctrler
 
+import "time"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -16,6 +18,8 @@ package shardctrler
 //
 // You will need to add fields to the RPC argument structs.
 //
+const RequestTimeout = time.Millisecond * 500
+const RequestTimeoutDeviation = time.Millisecond * 50
 
 // The number of shards.
 const NShards = 10
@@ -36,6 +40,8 @@ type Err string
 
 type JoinArgs struct {
 	Servers map[int][]string // new GID -> servers mappings
+	Cid     int64
+	Seq     int64
 }
 
 type JoinReply struct {
@@ -45,6 +51,8 @@ type JoinReply struct {
 
 type LeaveArgs struct {
 	GIDs []int
+	Cid  int64
+	Seq  int64
 }
 
 type LeaveReply struct {
@@ -55,6 +63,8 @@ type LeaveReply struct {
 type MoveArgs struct {
 	Shard int
 	GID   int
+	Cid   int64
+	Seq   int64
 }
 
 type MoveReply struct {
@@ -64,6 +74,8 @@ type MoveReply struct {
 
 type QueryArgs struct {
 	Num int // desired config number
+	Cid int64
+	Seq int64
 }
 
 type QueryReply struct {

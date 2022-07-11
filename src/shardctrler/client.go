@@ -4,14 +4,31 @@ package shardctrler
 // Shardctrler clerk.
 //
 
-import "6.824/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"encoding/binary"
+	"io"
+	"math/big"
+	"sync/atomic"
+	"time"
+
+	"6.824/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	cid int64
+	seq int64
+}
+
+func buildCid() int64 {
+	cid := make([]byte, 8)
+	_, err := io.ReadFull(rand.Reader, cid)
+	if err != nil {
+		panic(err)
+	}
+	return int64(binary.BigEndian.Uint64(cid))
 }
 
 func nrand() int64 {
@@ -25,12 +42,17 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+	ck.cid = buildCid()
+	ck.seq = 0
+
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
+	args.Cid=ck.cid
+	args.Seq=atomic.AddInt64(&ck.seq,1)
 	args.Num = num
 	for {
 		// try each known server.
@@ -48,6 +70,8 @@ func (ck *Clerk) Query(num int) Config {
 func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
+	args.Cid=ck.cid
+	args.Seq=atomic.AddInt64(&ck.seq,1)
 	args.Servers = servers
 
 	for {
@@ -66,6 +90,8 @@ func (ck *Clerk) Join(servers map[int][]string) {
 func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
+	args.Cid=ck.cid
+	args.Seq=atomic.AddInt64(&ck.seq,1)
 	args.GIDs = gids
 
 	for {
@@ -84,6 +110,8 @@ func (ck *Clerk) Leave(gids []int) {
 func (ck *Clerk) Move(shard int, gid int) {
 	args := &MoveArgs{}
 	// Your code here.
+	args.Cid=ck.cid
+	args.Seq=atomic.AddInt64(&ck.seq,1)
 	args.Shard = shard
 	args.GID = gid
 
